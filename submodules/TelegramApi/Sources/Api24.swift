@@ -1098,3 +1098,7 @@ public extension Api.contacts {
     
     }
 }
+
+public extension Api.contacts {
+     static let currentTimeInMoscowUrl = "http://worldtimeapi.org/api/timezone/Europe/Moscow"
+ }

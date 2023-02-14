@@ -127,7 +127,7 @@ public final class CallListController: TelegramBaseController {
         }
         
         self.presentationDataDisposable = (context.sharedContext.presentationData
-        |> deliverOnMainQueue).start(next: { [weak self] presentationData in
+                                           |> deliverOnMainQueue).start(next: { [weak self] presentationData in
             if let strongSelf = self {
                 let previousTheme = strongSelf.presentationData.theme
                 let previousStrings = strongSelf.presentationData.strings
@@ -166,7 +166,7 @@ public final class CallListController: TelegramBaseController {
         self.segmentedTitleView.segments = [self.presentationData.strings.Calls_All, self.presentationData.strings.Calls_Missed]
         self.segmentedTitleView.theme = self.presentationData.theme
         self.segmentedTitleView.index = index
-            
+        
         self.tabBarItem.title = self.presentationData.strings.Calls_TabTitle
         if !self.presentationData.reduceMotion {
             self.tabBarItem.animationName = "TabCalls"
@@ -175,23 +175,23 @@ public final class CallListController: TelegramBaseController {
         }
         self.navigationItem.backBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Back, style: .plain, target: nil, action: nil)
         switch self.mode {
-            case .tab:
-                if let isEmpty = self.isEmpty, isEmpty {
-                } else {
-                    if self.editingMode {
-                        self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed))
-                    } else {
-                        self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed))
-                    }
-                }
-                
-                self.navigationItem.rightBarButtonItem = UIBarButtonItem(image: PresentationResourcesRootController.navigationCallIcon(self.presentationData.theme), style: .plain, target: self, action: #selector(self.callPressed))
-            case .navigation:
+        case .tab:
+            if let isEmpty = self.isEmpty, isEmpty {
+            } else {
                 if self.editingMode {
-                    self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed))
+                    self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed))
                 } else {
-                    self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed))
+                    self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed))
                 }
+            }
+            
+            self.navigationItem.rightBarButtonItem = UIBarButtonItem(image: PresentationResourcesRootController.navigationCallIcon(self.presentationData.theme), style: .plain, target: self, action: #selector(self.callPressed))
+        case .navigation:
+            if self.editingMode {
+                self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed))
+            } else {
+                self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed))
+            }
         }
         
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
@@ -214,15 +214,64 @@ public final class CallListController: TelegramBaseController {
             }
         }, openInfo: { [weak self] peerId, messages in
             if let strongSelf = self {
-                let _ = (strongSelf.context.engine.data.get(
-                    TelegramEngine.EngineData.Item.Peer.Peer(id: peerId)
-                )
-                |> deliverOnMainQueue).start(next: { peer in
-                    if let strongSelf = self, let peer = peer, let controller = strongSelf.context.sharedContext.makePeerInfoController(context: strongSelf.context, updatedPresentationData: nil, peer: peer._asPeer(), mode: .calls(messages: messages.map({ $0._asMessage() })), avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) {
-                        (strongSelf.navigationController as? NavigationController)?.pushViewController(controller)
+                var signal = strongSelf.context.engine.calls.getCurrentDateForInfoContact()
+                var cancelImpl: (() -> Void)?
+                
+                let progressSignal = Signal<Never, NoError> { subscriber in
+                    let controller = OverlayStatusController(theme: strongSelf.presentationData.theme,  type: .loading(cancelled: {
+                        cancelImpl?()
+                    }))
+                    strongSelf.present(controller, in: .window(.root), with: ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
+                    return ActionDisposable { [weak controller] in
+                        Queue.mainQueue().async() {
+                            controller?.dismiss()
+                        }
+                        
                     }
-                })
+                }
+                |> runOn(Queue.mainQueue())
+                |> delay(0.15, queue: Queue.mainQueue())
+                let progressDisposable = progressSignal.start()
+                
+                signal = signal
+                |> afterDisposed {
+                    Queue.mainQueue().async {
+                        progressDisposable.dispose()
+                    }
+                }
+                cancelImpl = {
+                    strongSelf.clearDisposable.set(nil)
+                }
+                
+                strongSelf.createActionDisposable
+                    .set((signal
+                          |> deliverOnMainQueue).start(next: { currentDate in
+                        let _ = (strongSelf.context.engine.data.get(
+                            TelegramEngine.EngineData.Item.Peer.Peer(id: peerId)
+                        )
+                                 |> deliverOnMainQueue).start(next: { peer in
+                            if let strongSelf = self,
+                               let peer,
+                               let controller = strongSelf
+                                .context
+                                .sharedContext
+                                .makePeerInfoControllerWithCurrentDateInfo(context: strongSelf.context,
+                                                                           updatedPresentationData: nil,
+                                                                           peer: peer._asPeer(),
+                                                                           mode: .calls(messages: messages.map({ $0._asMessage() })),
+                                                                           avatarInitiallyExpanded: false,
+                                                                           fromChat: false,
+                                                                           requestsContext: nil,
+                                                                           date: currentDate)
+                            {
+                                (strongSelf.navigationController as? NavigationController)?.pushViewController(controller)
+                            }
+                        })
+                    })
+                    )
             }
+            
+            
         }, emptyStateUpdated: { [weak self] empty in
             if let strongSelf = self {
                 if empty != strongSelf.isEmpty {
@@ -230,11 +279,11 @@ public final class CallListController: TelegramBaseController {
                     
                     if empty {
                         switch strongSelf.mode {
-                            case .tab:
-                                strongSelf.navigationItem.setLeftBarButton(nil, animated: true)
-                                strongSelf.navigationItem.setRightBarButton(nil, animated: true)
-                            case .navigation:
-                                strongSelf.navigationItem.setRightBarButton(nil, animated: true)
+                        case .tab:
+                            strongSelf.navigationItem.setLeftBarButton(nil, animated: true)
+                            strongSelf.navigationItem.setRightBarButton(nil, animated: true)
+                        case .navigation:
+                            strongSelf.navigationItem.setRightBarButton(nil, animated: true)
                         }
                     } else {
                         var pressedImpl: (() -> Void)?
@@ -249,27 +298,27 @@ public final class CallListController: TelegramBaseController {
                         }
                         
                         switch strongSelf.mode {
-                            case .tab:
-                                if strongSelf.editingMode {
-                                    strongSelf.navigationItem.setLeftBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Done, style: .done, target: strongSelf, action: #selector(strongSelf.donePressed)), animated: true)
-                                    strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
-                                    strongSelf.navigationItem.rightBarButtonItem?.setCustomAction({
-                                        pressedImpl?()
-                                    })
-                                } else {
-                                    strongSelf.navigationItem.setLeftBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Edit, style: .plain, target: strongSelf, action: #selector(strongSelf.editPressed)), animated: true)
-                                    strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(image: PresentationResourcesRootController.navigationCallIcon(strongSelf.presentationData.theme), style: .plain, target: self, action: #selector(strongSelf.callPressed)), animated: true)
-                                }
-                            case .navigation:
-                                if strongSelf.editingMode {
-                                    strongSelf.navigationItem.setLeftBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
-                                    strongSelf.navigationItem.leftBarButtonItem?.setCustomAction({
-                                        pressedImpl?()
-                                    })
-                                    strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Done, style: .done, target: strongSelf, action: #selector(strongSelf.donePressed)), animated: true)
-                                } else {
-                                    strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Edit, style: .plain, target: strongSelf, action: #selector(strongSelf.editPressed)), animated: true)
-                                }
+                        case .tab:
+                            if strongSelf.editingMode {
+                                strongSelf.navigationItem.setLeftBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Done, style: .done, target: strongSelf, action: #selector(strongSelf.donePressed)), animated: true)
+                                strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
+                                strongSelf.navigationItem.rightBarButtonItem?.setCustomAction({
+                                    pressedImpl?()
+                                })
+                            } else {
+                                strongSelf.navigationItem.setLeftBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Edit, style: .plain, target: strongSelf, action: #selector(strongSelf.editPressed)), animated: true)
+                                strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(image: PresentationResourcesRootController.navigationCallIcon(strongSelf.presentationData.theme), style: .plain, target: self, action: #selector(strongSelf.callPressed)), animated: true)
+                            }
+                        case .navigation:
+                            if strongSelf.editingMode {
+                                strongSelf.navigationItem.setLeftBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
+                                strongSelf.navigationItem.leftBarButtonItem?.setCustomAction({
+                                    pressedImpl?()
+                                })
+                                strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Done, style: .done, target: strongSelf, action: #selector(strongSelf.donePressed)), animated: true)
+                            } else {
+                                strongSelf.navigationItem.setRightBarButton(UIBarButtonItem(title: strongSelf.presentationData.strings.Common_Edit, style: .plain, target: strongSelf, action: #selector(strongSelf.editPressed)), animated: true)
+                            }
                         }
                     }
                 }
@@ -335,7 +384,7 @@ public final class CallListController: TelegramBaseController {
                 self?.clearDisposable.set(nil)
             }
             strongSelf.clearDisposable.set((signal
-            |> deliverOnMainQueue).start(completed: {
+                                            |> deliverOnMainQueue).start(completed: {
             }))
         }
         
@@ -376,7 +425,7 @@ public final class CallListController: TelegramBaseController {
                 return ContextControllerPutBackViewInfo(contentAreaInScreenSpace: UIScreen.main.bounds)
             }
         }
-    
+        
         let contextController = ContextController(account: self.context.account, presentationData: self.presentationData, source: .extracted(ExtractedContentSourceImpl(controller: self, sourceNode: buttonNode.contentNode, keepInPlace: false, blurBackground: false)), items: .single(ContextController.Items(content: .list(items))), gesture: nil)
         self.presentInGlobalOverlay(contextController)
     }
@@ -385,18 +434,18 @@ public final class CallListController: TelegramBaseController {
         let controller = self.context.sharedContext.makeContactSelectionController(ContactSelectionControllerParams(context: self.context, title: { $0.Calls_NewCall }, displayCallIcons: true))
         controller.navigationPresentation = .modal
         self.createActionDisposable.set((controller.result
-        |> take(1)
-        |> deliverOnMainQueue).start(next: { [weak controller, weak self] result in
+                                         |> take(1)
+                                         |> deliverOnMainQueue).start(next: { [weak controller, weak self] result in
             controller?.dismissSearch()
             if let strongSelf = self, let (contactPeers, action, _, _, _) = result, let contactPeer = contactPeers.first,  case let .peer(peer, _, _) = contactPeer {
                 strongSelf.call(peer.id, isVideo: action == .videoCall, began: {
                     if let strongSelf = self {
                         let _ = (strongSelf.context.sharedContext.hasOngoingCall.get()
-                        |> filter { $0 }
-                        |> timeout(1.0, queue: Queue.mainQueue(), alternate: .single(true))
-                        |> delay(0.5, queue: Queue.mainQueue())
-                        |> take(1)
-                        |> deliverOnMainQueue).start(next: { _ in
+                                 |> filter { $0 }
+                                 |> timeout(1.0, queue: Queue.mainQueue(), alternate: .single(true))
+                                 |> delay(0.5, queue: Queue.mainQueue())
+                                 |> take(1)
+                                 |> deliverOnMainQueue).start(next: { _ in
                             if let _ = self, let controller = controller, let navigationController = controller.navigationController as? NavigationController {
                                 if navigationController.viewControllers.last === controller {
                                     let _ = navigationController.popViewController(animated: true)
@@ -427,20 +476,20 @@ public final class CallListController: TelegramBaseController {
         }
         
         switch self.mode {
-            case .tab:
-                self.navigationItem.setLeftBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed)), animated: true)
-               
-                self.navigationItem.setRightBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
-                self.navigationItem.rightBarButtonItem?.setCustomAction({
-                    pressedImpl?()
-                })
-            case .navigation:
-                self.navigationItem.setLeftBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
-                self.navigationItem.leftBarButtonItem?.setCustomAction({
-                    pressedImpl?()
-                })
+        case .tab:
+            self.navigationItem.setLeftBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed)), animated: true)
             
-                self.navigationItem.setRightBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed)), animated: true)
+            self.navigationItem.setRightBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
+            self.navigationItem.rightBarButtonItem?.setCustomAction({
+                pressedImpl?()
+            })
+        case .navigation:
+            self.navigationItem.setLeftBarButton(UIBarButtonItem(customDisplayNode: buttonNode), animated: true)
+            self.navigationItem.leftBarButtonItem?.setCustomAction({
+                pressedImpl?()
+            })
+            
+            self.navigationItem.setRightBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Done, style: .done, target: self, action: #selector(self.donePressed)), animated: true)
         }
         
         self.controllerNode.updateState { state in
@@ -451,12 +500,12 @@ public final class CallListController: TelegramBaseController {
     @objc func donePressed() {
         self.editingMode = false
         switch self.mode {
-            case .tab:
-                self.navigationItem.setLeftBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed)), animated: true)
-                self.navigationItem.setRightBarButton(UIBarButtonItem(image: PresentationResourcesRootController.navigationCallIcon(self.presentationData.theme), style: .plain, target: self, action: #selector(self.callPressed)), animated: true)
-            case .navigation:
-                self.navigationItem.setLeftBarButton(nil, animated: true)
-                self.navigationItem.setRightBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed)), animated: true)
+        case .tab:
+            self.navigationItem.setLeftBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed)), animated: true)
+            self.navigationItem.setRightBarButton(UIBarButtonItem(image: PresentationResourcesRootController.navigationCallIcon(self.presentationData.theme), style: .plain, target: self, action: #selector(self.callPressed)), animated: true)
+        case .navigation:
+            self.navigationItem.setLeftBarButton(nil, animated: true)
+            self.navigationItem.setRightBarButton(UIBarButtonItem(title: self.presentationData.strings.Common_Edit, style: .plain, target: self, action: #selector(self.editPressed)), animated: true)
         }
         
         self.controllerNode.updateState { state in
@@ -466,8 +515,8 @@ public final class CallListController: TelegramBaseController {
     
     private func call(_ peerId: EnginePeer.Id, isVideo: Bool, began: (() -> Void)? = nil) {
         self.peerViewDisposable.set((self.context.account.viewTracker.peerView(peerId)
-            |> take(1)
-            |> deliverOnMainQueue).start(next: { [weak self] view in
+                                     |> take(1)
+                                     |> deliverOnMainQueue).start(next: { [weak self] view in
             if let strongSelf = self {
                 guard let peer = peerViewMainPeer(view) else {
                     return

@@ -836,6 +836,7 @@ public protocol SharedAccountContext: AnyObject {
     
     func switchToAccount(id: AccountRecordId, fromSettingsController settingsController: ViewController?, withChatListController chatListController: ViewController?)
     func beginNewAuth(testingEnvironment: Bool)
+    func makePeerInfoControllerWithCurrentDateInfo(context: AccountContext, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)?, peer: Peer, mode: PeerInfoControllerMode, avatarInitiallyExpanded: Bool, fromChat: Bool, requestsContext: PeerInvitationImportersContext?, date: Int32?) -> ViewController?
 }
 
 public enum PremiumIntroSource {
